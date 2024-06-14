@@ -1,0 +1,272 @@
+
+```{r}
+
+# Load necessary libraries
+library(caret)
+library(randomForest)
+library(rpart)
+library(dplyr)
+library(corrplot)
+
+
+# Load the dataset
+housing <- read.csv("housing.csv")
+
+# Explore the dataset
+head(housing)
+```
+
+```{r}
+# Select only numeric columns for the histogram
+numeric_columns <- sapply(housing, is.numeric)
+hist_data <- housing[, numeric_columns]
+
+# Check if there are any missing values in the numeric columns
+if (any(is.na(hist_data))) {
+  hist_data <- hist_data[, !apply(is.na(hist_data), 2, any)]
+}
+
+# Create histograms
+par(mfrow = c(3, 3))
+for (col in colnames(hist_data)) {
+  hist(hist_data[[col]], breaks = 50, col = "lightblue", main = paste("Histogram of", col), col.main = "darkblue")
+}
+```
+
+```{r}
+# Create income category
+housing$income_cat <- ceiling(housing$median_income / 1.5)
+housing$income_cat[housing$income_cat > 5] <- 5
+
+```
+
+```{r}
+# Stratified sampling
+set.seed(42)
+split <- createDataPartition(housing$income_cat, p = 0.7, list = FALSE, times = 1)
+strat_train_set <- housing[split, ]
+strat_test_set <- housing[-split, ]
+
+
+# Data visualization
+plot(housing$longitude, housing$latitude, col = "blue", pch = 20,
+     cex = housing$population / 100, main = "Housing Data",
+     xlab = "Longitude", ylab = "Latitude")
+legend("topright", legend = "Population", col = "blue", pch = 20, cex = 0.7)
+
+```
+
+```{r}
+# Scatter matrix
+pairs(select(strat_train_set, c("median_house_value", "median_income", "total_rooms", "housing_median_age")))
+
+# Scatter plot
+plot(housing$median_income, housing$median_house_value, col = "blue", pch = 20,
+     main = "Median Income vs Median House Value", xlab = "Median Income", ylab = "Median House Value", alpha = 0.1)
+
+```
+
+```{r}
+# Feature engineering
+housing$rooms_per_household <- housing$total_rooms / housing$households
+housing$bedrooms_per_room <- housing$total_bedrooms / housing$total_rooms
+housing$population_per_household <- housing$population / housing$households
+
+# Correlation matrix
+numeric_columns <- sapply(housing, is.numeric)
+numeric_housing <- housing[, numeric_columns]
+
+# Compute correlation matrix
+corr_matrix <- round(cor(numeric_housing), digits = 2)
+print(sort(corr_matrix["median_house_value", ], decreasing = TRUE))
+
+plot(corr_matrix)
+knitr::kable(corr_matrix)
+
+corr_matrix <- cor(numeric_housing, use = "complete.obs")
+corrplot(corr_matrix, method = "color", type = "upper", order = "hclust", tl.cex = 0.7)
+
+```
+
+```{r}
+
+# Data preparation
+housing <- subset(strat_train_set, select = -c(median_house_value))
+housing_labels <- strat_train_set$median_house_value
+
+# Define custom transformers
+CombinedAttributesAdder <- function(X, add_bedrooms_per_room = TRUE) {
+  rooms_per_household <- X[, "total_rooms"] / X[, "households"]
+  population_per_household <- X[, "population"] / X[, "households"]
+  
+  if (add_bedrooms_per_room) {
+    bedrooms_per_room <- X[, "total_bedrooms"] / X[, "total_rooms"]
+    return(cbind(X, rooms_per_household, population_per_household, bedrooms_per_room))
+  } else {
+    return(cbind(X, rooms_per_household, population_per_household))
+  }
+}
+
+DataFrameSelector <- function(X, attribute_names) {
+  return(X[, attribute_names, drop = FALSE])
+}
+
+# Custom label binarizer
+MyLabelBinarizer <- function(x) {
+  return(as.numeric(as.factor(x)))
+}
+
+# Define pipelines
+num_attribs <- names(housing[, sapply(housing, is.numeric)])
+cat_attribs <- "ocean_proximity"
+
+# Separate numeric and categorical variables
+num_vars <- housing[, num_attribs]
+cat_vars <- housing[, cat_attribs, drop = FALSE]
+
+# Numeric pipeline
+num_pipeline <- preProcess(num_vars, method = c("medianImpute", "center", "scale"))
+num_vars_prepared <- predict(num_pipeline, num_vars)
+
+# Categorical pipeline (dummy encoding)
+encoded_cat <- dummyVars(~ ., data = cat_vars)
+cat_vars_prepared <- predict(encoded_cat, newdata = cat_vars)
+
+# Combine numeric and categorical variables
+housing_prepared <- cbind(num_vars_prepared, cat_vars_prepared)
+
+# Add 'median_house_value' to housing_prepared
+housing_prepared$median_house_value <- strat_train_set$median_house_value
+
+# Check the structure of housing_prepared after adding the target variable
+str(housing_prepared)
+```
+
+```{r}
+
+# Fit linear regression model
+lin_reg <- lm(median_house_value ~ ., data = housing_prepared)
+summary(lin_reg)
+
+# Linear Regression
+lin_reg <- lm(median_house_value ~ ., data = housing_prepared)
+summary(lin_reg)
+plot(lin_reg)
+```
+
+```{r}
+# Fit the decision tree model
+tree_model <- rpart(median_house_value ~ ., data = housing_prepared)
+
+# Print the decision tree
+print(tree_model)
+
+# Plot the decision tree (optional)
+plot(tree_model)
+text(tree_model)
+
+# Random Forest
+
+# Rename columns with special characters
+colnames(housing_prepared) <- make.names(colnames(housing_prepared))
+
+# Train Random Forest model
+forest_reg <- randomForest(
+  median_house_value ~ .,
+  data = housing_prepared,
+  ntree = 100
+)
+
+# Print the model
+print(forest_reg)
+
+
+
+# Grid Search for Random Forest
+param_grid <- expand.grid(
+  mtry = c(2, 4, 6, 8),
+  ntree = c(3, 10, 30),
+  nodesize = c(5, 10, 20)
+)
+
+# Define the tuning grid for the randomForest method
+tune_grid <- data.frame(mtry = param_grid$mtry)
+
+grid_search <- train(
+  median_house_value ~ .,
+  data = housing_prepared,
+  method = "rf",
+  trControl = trainControl(method = "cv", number = 5),
+  tuneGrid = tune_grid  # Note the change here
+)
+
+# Print the grid search results
+print(grid_search)
+
+
+# Final Model
+final_model <- randomForest(median_house_value ~ ., data = housing_prepared, ntree = 30, max_features = 8)
+print(final_model)
+
+# Evaluate on test set
+X_test <- subset(strat_test_set, select = -c(median_house_value))
+y_test <- strat_test_set$median_house_value
+
+# Separate numeric and categorical variables in the test set
+X_test_num <- X_test[, num_attribs]
+X_test_cat <- X_test[, cat_attribs, drop = FALSE]
+
+# Preprocess numeric variables in the test set
+X_test_num_prepared <- predict(num_pipeline, newdata = X_test_num)
+
+# Preprocess categorical variables in the test set
+X_test_cat_prepared <- predict(encoded_cat, newdata = X_test_cat)
+
+# Combine numeric and categorical variables in the test set
+X_test_prepared <- cbind(X_test_num_prepared, X_test_cat_prepared)
+
+```
+
+```{r}
+
+# Continue with your model evaluation code
+colnames(X_test_prepared) <- make.names(colnames(X_test_prepared))
+
+final_predictions <- predict(final_model, newdata = X_test_prepared)
+#plot(final_predictions)
+summary(final_predictions)
+
+final_rmse <- sqrt(mean((final_predictions - y_test)^2))
+print(final_rmse)
+
+```
+
+```{r}
+
+# Compare actual price vs. predicted price
+plot_predictions <- data.frame(Actual = y_test, Predicted = final_predictions)
+
+# Scatter plot
+plot(plot_predictions$Actual, plot_predictions$Predicted, 
+     main = "Actual Price vs. Predicted Price",
+     xlab = "Actual Price", ylab = "Predicted Price", 
+     pch = 16, col = "blue", cex = 0.8)
+
+# Add a diagonal line for reference (perfect prediction)
+abline(a = 0, b = 1, col = "red", lty = 2)
+
+# Add legend
+legend("topleft", legend = "Perfect Prediction", col = "red", lty = 2, cex = 0.8)
+
+# Evaluate the accuracy metrics
+accuracy_metrics <- data.frame(
+  RMSE = sqrt(mean((final_predictions - y_test)^2)),
+  MAE = mean(abs(final_predictions - y_test)),
+  R2 = 1 - (sum((final_predictions - y_test)^2) / sum((y_test - mean(y_test))^2))
+)
+
+print("Accuracy Metrics:")
+print(accuracy_metrics)
+
+
+```
