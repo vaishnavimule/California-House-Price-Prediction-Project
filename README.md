@@ -63,4 +63,4 @@ This project aims to predict California house prices using various machine learn
 
 ---
 
-Feel free to customize and expand upon this README to suit the specific details and requirements of your project!
+
